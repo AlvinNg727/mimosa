@@ -1,0 +1,27 @@
+<!-- Live: Livox Mid-360 driver + TI IWR6843AOP radar driver + mimosa -->
+<launch>
+    <arg name="viz" default="false" />
+    <arg name="radar" default="true" />
+    <arg name="radar_command_port" default="/dev/ttyUSB0" />
+    <arg name="radar_data_port" default="/dev/ttyUSB1" />
+    <arg name="config_override" default="" />
+
+    <!-- xfer_format 0 = PointCloud2 with per-point timestamps (mimosa PointLivox), not CustomMsg -->
+    <include file="$(find livox_ros_driver2)/launch_ROS1/msg_MID360s.launch">
+        <arg name="xfer_format" value="0" />
+    </include>
+
+    <include file="$(find mimosa)/launch/radar_6843aop.launch" if="$(arg radar)">
+        <arg name="command_port" value="$(arg radar_command_port)" />
+        <arg name="data_port" value="$(arg radar_data_port)" />
+    </include>
+
+    <node pkg="tf" type="static_transform_publisher" name="radar_baselink_0"
+        args="0 0 0 0 0 0 mimosa_map ti_mmwave 100" />
+
+
+    <include file="$(find mimosa)/launch/mid360_node.launch">
+        <arg name="viz" value="$(arg viz)" />
+        <arg name="config_override" value="$(arg config_override)" />
+    </include>
+</launch>

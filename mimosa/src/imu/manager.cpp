@@ -84,6 +84,11 @@ void Manager::callback(const sensor_msgs::Imu::ConstPtr & msg)
     imu_meas.head<3>() *= config_.acc_scale_factor;
   }
 
+  // Express the measurement in the body frame. Pure rotation, so no lever arm terms
+  const M3D R_B_I = config_.T_B_I.rotation().matrix();
+  imu_meas.head<3>() = R_B_I * imu_meas.head<3>();
+  imu_meas.tail<3>() = R_B_I * imu_meas.tail<3>();
+
   // Add to buffer
   ImuBuffer::const_iterator it_current, it_previous;
   bool propagate = false;
@@ -535,6 +540,7 @@ void declare_config(ManagerConfig & config)
       field(config.interpolation_max_ts_diff, "interpolation_max_ts_diff", "s");
       field(config.extrapolation_max_ts_diff, "extrapolation_max_ts_diff", "s");
       field(config.acc_scale_factor, "acc_scale_factor");
+      field(config.T_B_I, "T_B_I", "gtsam::Pose3");
     }
     field(config.preintegration, "preintegration");
   }
@@ -544,6 +550,8 @@ void declare_config(ManagerConfig & config)
   check(config.extrapolation_max_ts_diff, GT, 0.005, "extrapolation_max_ts_diff");
   check(config.acc_scale_factor, GE, 1.0, "acc_scale_factor");
   check(config.acc_scale_factor, LT, 10.0, "acc_scale_factor");
+  checkCondition(
+    config.T_B_I.translation().norm() == 0.0, "T_B_I must be a pure rotation (body origin is the IMU)");
 }
 
 }  // namespace imu

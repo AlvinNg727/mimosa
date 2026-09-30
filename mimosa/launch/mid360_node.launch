@@ -1,0 +1,31 @@
+<!-- Helper: mimosa on the Mid-360 + IWR6843AOP rig. Use mid360_live.launch or mid360_rosbag.launch -->
+<launch>
+  <arg name="type" default="mimosa_node" /> <!-- mimosa_rosbag = offline bag reader -->
+  <arg name="required" default="false" />
+  <arg name="viz" default="false" />
+  <!-- PointCloud2 topic; /livox/points for bags from recordings/record_noetic.sh -->
+  <arg name="lidar_topic" default="/livox/lidar" />
+  <arg name="config_override" default="" />
+  <!-- mimosa_rosbag only -->
+  <arg name="bag_name" default="" />
+  <arg name="s" default="0" />
+  <arg name="lidar_collection_delay" default="0" /> <!-- Livox header stamps used as-is -->
+
+  <node pkg="mimosa" type="$(arg type)" name="mimosa_node" output="screen" clear_params="true" required="$(arg required)">
+    <remap from="/mimosa_node/imu/manager/imu_in" to="/livox/imu" />
+    <remap from="/mimosa_node/lidar/manager/lidar_in" to="$(arg lidar_topic)" />
+    <remap from="/mimosa_node/radar/manager/radar_in" to="/ti_mmwave/radar_scan_pcl" />
+
+    <param name="bag_name" value="$(arg bag_name)" />
+    <param name="s" value="$(arg s)" />
+    <param name="lidar_collection_delay" value="$(arg lidar_collection_delay)" />
+
+    <rosparam file="$(find mimosa)/config/mid360/params.yaml" />
+    <rosparam file="$(find mimosa)/config/os_dummy.json" command="load" ns="lidar/sensor" />
+
+    <!-- Override config loaded second (overwrites matching keys) -->
+    <rosparam file="$(arg config_override)" if="$(eval config_override != '')" />
+  </node>
+
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find mimosa)/rviz/mimosa.rviz" if="$(arg viz)" />
+</launch>

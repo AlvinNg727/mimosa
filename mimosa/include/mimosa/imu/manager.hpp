@@ -60,6 +60,7 @@ struct ManagerConfig
   float interpolation_max_ts_diff = 0.01;  // s
   float extrapolation_max_ts_diff = 0.01;  // s
   float acc_scale_factor = 1.0;            // used only when IMU measurements are in units of g
+  gtsam::Pose3 T_B_I = gtsam::Pose3::Identity();  // IMU in body; rotation only, rotates acc and gyro into body
 
   PreintegrationConfig preintegration;
 };

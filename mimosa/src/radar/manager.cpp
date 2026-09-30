@@ -31,7 +31,7 @@ void Manager::callback(const sensor_msgs::PointCloud2::ConstPtr & msg)
   }
 
   // The timestamp should always be in the center of the exposure. If it is not, then this should be compensated for.
-  corrected_ts_ = header_ts_ + (config_.is_exposure_compensated ? 0 : config_.frame_ms * 1e-3 / 2);
+  corrected_ts_ = header_ts_ + config_.base.ts_offset + (config_.is_exposure_compensated ? 0 : config_.frame_ms * 1e-3 / 2);
   logger_->debug("Header timestamp: {}, Corrected timestamp: {}", header_ts_, corrected_ts_);
 
   static bool first = true;

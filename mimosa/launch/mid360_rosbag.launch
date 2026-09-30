@@ -1,0 +1,32 @@
+<!-- Playback of a bag from mid360_record.launch / recordings/record_noetic.sh.
+     realtime:=true  rosbag play into the live mimosa_node, as if the sensors were running.
+     realtime:=false mimosa_rosbag reads the bag as fast as it can; deterministic, and writes
+                     /tmp/mimosa/graph_manager_odometry.tum (used by scripts/compare_combos.sh) -->
+<launch>
+    <arg name="bag_name" />
+    <arg name="realtime" default="true" />
+    <arg name="rate" default="1" /> <!-- realtime only -->
+    <arg name="s" default="0" />    <!-- start offset in seconds -->
+    <arg name="viz" default="true" />
+    <!-- PointCloud2 topic; /livox/points for bags from recordings/record_noetic.sh -->
+    <arg name="lidar_topic" default="/livox/lidar" />
+    <arg name="config_override" default="" />
+
+    <include file="$(find mimosa)/launch/mid360_node.launch">
+        <arg name="type" value="$(eval 'mimosa_node' if realtime else 'mimosa_rosbag')" />
+        <arg name="required" value="$(eval not realtime and not viz)" />
+        <arg name="viz" value="$(arg viz)" />
+        <arg name="lidar_topic" value="$(arg lidar_topic)" />
+        <arg name="config_override" value="$(arg config_override)" />
+        <arg name="bag_name" value="$(arg bag_name)" />
+        <arg name="s" value="$(arg s)" />
+    </include>
+
+    <group if="$(arg realtime)">
+        <param name="/use_sim_time" value="true" />
+        <!-- not required with viz, so rviz stays up after the bag ends (Ctrl-C to quit) -->
+        <!-- delay lets mimosa subscribe before the first IMU/LiDAR messages go out -->
+        <node pkg="rosbag" type="play" name="player" output="screen" required="$(eval not viz)"
+            args="--clock --delay=3 -s $(arg s) -r $(arg rate) $(arg bag_name)" />
+    </group>
+</launch>
