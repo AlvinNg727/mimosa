@@ -252,6 +252,43 @@ inline void broadcastTransform(
   tf2_broadcaster.sendTransform(ts_frame_child);
 }
 
+// Validate the output/base frame configuration. Called from within declare_config() so that a
+// bad combination fails at startup instead of silently corrupting the TF tree.
+// The graph manager broadcasts map -> output as T_W_B * T_B_Base, but only broadcasts the
+// compensating static output -> body transform when output != body. Hence, when the effective
+// output frame is the body frame, a non-identity T_B_Base would move the body frame away from
+// the IMU while the static body -> sensor transforms still assume body == IMU.
+inline void validateOutputFrameParams(
+  const std::string & output_frame, const std::string & body_frame, const std::string & map_frame,
+  const gtsam::Pose3 & T_B_Base)
+{
+  using namespace config;
+  const std::string output = output_frame.empty() ? body_frame : output_frame;
+  checkCondition(output != map_frame, "output_frame must not be the same as map_frame");
+  if (output == body_frame) {
+    checkCondition(
+      T_B_Base.translation().norm() < 1e-9 &&
+        gtsam::Rot3::Logmap(T_B_Base.rotation()).norm() < 1e-9,
+      "T_B_Base must be identity when output_frame is empty or equal to body_frame. Set "
+      "output_frame to a distinct frame (e.g. base_link) to use a non-identity T_B_Base.");
+  }
+}
+
+// Convert the twist of the body/IMU origin into the output/base frame, and express it in the
+// output/base frame as required by the ROS odometry convention (twist is in the child frame).
+// v_body: linear velocity of the body/IMU origin, expressed in the body frame.
+// omega_body: angular velocity, expressed in the body frame.
+// T_B_O: pose of the output/base frame in the body/IMU frame.
+inline void convertTwistToOutputFrame(
+  const gtsam::Pose3 & T_B_O, const V3D & v_body, const V3D & omega_body, V3D & v_output,
+  V3D & omega_output)
+{
+  const M3D R_B_O = T_B_O.rotation().matrix();
+  const V3D t_B_O = T_B_O.translation();
+  v_output = R_B_O.transpose() * (v_body + omega_body.cross(t_B_O));
+  omega_output = R_B_O.transpose() * omega_body;
+}
+
 inline gtsam::Point3 toGtsam(const geometry_msgs::Point & gm_p)
 {
   return gtsam::Point3(gm_p.x, gm_p.y, gm_p.z);

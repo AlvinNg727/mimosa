@@ -44,6 +44,17 @@ struct GeometricConfig
   std::string sensor_frame = "mimosa_lidar";
   std::string body_frame = "mimosa_body";
   gtsam::Pose3 T_B_L = gtsam::Pose3::Identity();
+  // Output (base_link) frame. Empty => use body_frame (backward compatible). Must match the
+  // graph/imu managers, which read the same top-level `output_frame` key.
+  std::string output_frame = "";
+  // Pose of the output/base frame in the body/IMU frame. Used to express the published keyframe
+  // poses in the same output frame as the graph manager's path/odometry.
+  gtsam::Pose3 T_B_Base = gtsam::Pose3::Identity();
+
+  inline std::string outputFrame() const
+  {
+    return output_frame.empty() ? body_frame : output_frame;
+  }
 
   int point_skip_divisor = 1;
   int ring_skip_divisor = 1;

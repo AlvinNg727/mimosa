@@ -14,7 +14,7 @@ namespace YAML
 template <>
 struct convert<gtsam::Pose3>
 {
-  // The Pose3 is shown as x, y, z, x, y, z, w
+  // The Pose3 is shown as x, y, z, qx, qy, qz, qw
 
   static Node encode(const gtsam::Pose3 & rhs)
   {
@@ -36,8 +36,9 @@ struct convert<gtsam::Pose3>
     }
 
     rhs = gtsam::Pose3(
-      gtsam::Rot3(gtsam::Quaternion(
-        node[6].as<double>(), node[3].as<double>(), node[4].as<double>(), node[5].as<double>())),
+      gtsam::Rot3(
+        gtsam::Quaternion(
+          node[6].as<double>(), node[3].as<double>(), node[4].as<double>(), node[5].as<double>())),
       gtsam::Point3(node[0].as<double>(), node[1].as<double>(), node[2].as<double>()));
     return true;
   }

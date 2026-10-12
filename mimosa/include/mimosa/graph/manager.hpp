@@ -58,10 +58,19 @@ struct ManagerConfig
   std::string map_frame = "map";
   std::string navigation_frame = "navigation";
   std::string body_frame = "body";
+  // Output (base_link) frame. Empty => use body_frame (backward compatible).
+  std::string output_frame = "";
+  // Pose of the output/base frame in the body/IMU frame (T_B_O). Full 6DoF.
+  gtsam::Pose3 T_B_Base = gtsam::Pose3::Identity();
   std::string logs_directory = "/tmp/";
   std::string log_level = "info";
   float max_measurement_latency = 0.1;  // s
   SmootherConfig smoother;
+
+  inline std::string outputFrame() const
+  {
+    return output_frame.empty() ? body_frame : output_frame;
+  }
 };
 
 void declare_config(ManagerConfig & config);
@@ -111,6 +120,8 @@ private:
   // Outputs
   tf2_ros::TransformBroadcaster tf2_broadcaster_;
   tf2_ros::StaticTransformBroadcaster tf2_static_broadcaster_;
+  // T_B_Base never changes at runtime, so the static output -> body TF only needs one send.
+  bool output_static_tf_sent_ = false;
   ros::Publisher pub_path_;
   ros::Publisher pub_odometry_;
   ros::Publisher pub_transform_stamped_;

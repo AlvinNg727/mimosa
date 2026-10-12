@@ -1,6 +1,8 @@
 logs_directory: /tmp/mimosa/
 map_frame: mimosa_map
 body_frame: mimosa_body
+output_frame: mimosa_base
+T_B_Base: [0, 0, 0, 0, 0, 0, 1] # x, y, z, qx, qy, qz, qw # pose of mimosa_base (base_link) in body/IMU frame
 
 imu:
   manager:

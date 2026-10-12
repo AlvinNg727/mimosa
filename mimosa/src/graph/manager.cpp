@@ -695,8 +695,21 @@ void Manager::initializeGraph(
 
 void Manager::publishResults()
 {
-  broadcastTransform(
-    tf2_broadcaster_, state_.navState().pose(), config_.map_frame, config_.body_frame, state_.ts());
+  // Internal estimate is T_W_B (body origin = IMU origin). Shift to output/base frame.
+  const gtsam::Pose3 T_W_B = state_.navState().pose();
+  const gtsam::Pose3 T_W_O = T_W_B * config_.T_B_Base;
+  const std::string output_frame = config_.outputFrame();
+
+  // Dynamic map -> base/output
+  broadcastTransform(tf2_broadcaster_, T_W_O, config_.map_frame, output_frame, state_.ts());
+
+  // Static base/output -> body so the existing body->sensor statics stay valid:
+  // map -> base -> body -> sensor. T_B_Base is constant, send once.
+  if (output_frame != config_.body_frame && !output_static_tf_sent_) {
+    broadcastTransform(
+      tf2_static_broadcaster_, config_.T_B_Base.inverse(), output_frame, config_.body_frame, 0.0);
+    output_static_tf_sent_ = true;
+  }
 
   // Broadcast the nav to map transform
   const V3D n_g_direction = -V3D::UnitZ();
@@ -709,24 +722,34 @@ void Manager::publishResults()
 
   static nav_msgs::Path path;
   path.header.frame_id = config_.map_frame;
-  publishPath(pub_path_, path, state_.navState().pose(), state_.ts());
+  publishPath(pub_path_, path, T_W_O, state_.ts());
 
   // Write the trajectory to the trajectory logger
   // timestamp tx ty tz qx qy qz qw
-  const gtsam::Quaternion q = state_.navState().pose().rotation().toQuaternion();
+  const gtsam::Quaternion q = T_W_O.rotation().toQuaternion();
   trajectory_logger_->info(
-    "{} {} {} {} {} {} {} {}", state_.ts(), state_.navState().pose().translation().x(),
-    state_.navState().pose().translation().y(), state_.navState().pose().translation().z(), q.x(),
-    q.y(), q.z(), q.w());
+    "{} {} {} {} {} {} {} {}", state_.ts(), T_W_O.translation().x(), T_W_O.translation().y(),
+    T_W_O.translation().z(), q.x(), q.y(), q.z(), q.w());
 
   // Publish odometry
   static nav_msgs::Odometry odometry;
   if (pub_odometry_.getNumSubscribers()) {
     odometry.header.frame_id = config_.map_frame;
-    odometry.child_frame_id = config_.body_frame;
+    odometry.child_frame_id = output_frame;
     odometry.header.stamp.fromSec(state_.ts());
-    convert(state_.navState().pose(), odometry.pose.pose);
-    convert(state_.navState().velocity(), odometry.twist.twist.linear);
+    convert(T_W_O, odometry.pose.pose);
+
+    V3D omega_body;
+    // Interpolate the gyro at the state timestamp so the twist matches the published pose.
+    // Falls back to zero if the IMU buffer does not cover state_.ts() yet.
+    if (!imu_manager_->getBodyAngularVelocityAt(state_.ts(), omega_body)) {
+      omega_body.setZero();
+    }
+    V3D v_output, omega_output;
+    convertTwistToOutputFrame(
+      config_.T_B_Base, state_.navState().bodyVelocity(), omega_body, v_output, omega_output);
+    convert(v_output, odometry.twist.twist.linear);
+    convert(omega_output, odometry.twist.twist.angular);
     pub_odometry_.publish(odometry);
   }
 
@@ -734,9 +757,9 @@ void Manager::publishResults()
   static geometry_msgs::TransformStamped ts_frame_child;
   if (pub_transform_stamped_.getNumSubscribers()) {
     ts_frame_child.header.frame_id = config_.map_frame;
-    ts_frame_child.child_frame_id = config_.body_frame;
+    ts_frame_child.child_frame_id = output_frame;
     ts_frame_child.header.stamp.fromSec(state_.ts());
-    convert(state_.navState().pose(), ts_frame_child.transform);
+    convert(T_W_O, ts_frame_child.transform);
     pub_transform_stamped_.publish(ts_frame_child);
   }
 
@@ -761,7 +784,7 @@ void Manager::publishResults()
     geometry_msgs::PoseStamped pose;
     pose.header.frame_id = config_.map_frame;
     pose.header.stamp.fromSec(state_.ts());
-    convert(value.cast<gtsam::Pose3>(), pose.pose);
+    convert(value.cast<gtsam::Pose3>() * config_.T_B_Base, pose.pose);
     opt_path.poses.push_back(pose);
   }
 
@@ -827,6 +850,8 @@ void declare_config(ManagerConfig & config)
   field(config.map_frame, "map_frame", "str");
   field(config.navigation_frame, "navigation_frame", "str");
   field(config.body_frame, "body_frame", "str");
+  field(config.output_frame, "output_frame", "str");
+  field(config.T_B_Base, "T_B_Base", "gtsam::Pose3");
 
   {
     NameSpace ns("graph/manager");
@@ -836,6 +861,10 @@ void declare_config(ManagerConfig & config)
   }
 
   check(config.body_frame, NE, config.map_frame, "body_frame");
+  const std::string output_frame = config.outputFrame();
+  check(config.navigation_frame, NE, output_frame, "navigation_frame");
+  validateOutputFrameParams(
+    config.output_frame, config.body_frame, config.map_frame, config.T_B_Base);
 }
 
 }  // namespace graph

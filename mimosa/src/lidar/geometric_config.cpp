@@ -56,6 +56,8 @@ void declare_config(GeometricConfig & config)
   field(config.logs_directory, "logs_directory", "directory_path");
   field(config.map_frame, "map_frame", "str");
   field(config.body_frame, "body_frame", "str");
+  field(config.output_frame, "output_frame", "str");
+  field(config.T_B_Base, "T_B_Base", "gtsam::Pose3");
 
   {
     NameSpace ns("lidar");
@@ -87,6 +89,8 @@ void declare_config(GeometricConfig & config)
       neighbor_voxel_mode_values.begin(), neighbor_voxel_mode_values.end(),
       config.neighbor_voxel_mode) != neighbor_voxel_mode_values.end(),
     EQ, true, "neighbor_voxel_mode");
+  validateOutputFrameParams(
+    config.output_frame, config.body_frame, config.map_frame, config.T_B_Base);
 }
 
 }  // namespace lidar

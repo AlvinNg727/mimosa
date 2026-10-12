@@ -2,6 +2,8 @@ logs_directory: /tmp/mimosa/
 map_frame: mimosa_map
 navigation_frame: mimosa_navigation
 body_frame: mimosa_body
+output_frame: mimosa_base
+T_B_Base: [0, 0, 0, 0, 0, 0, 1] # x, y, z, qx, qy, qz, qw # pose of mimosa_base (base_link) in body/IMU frame; set translation/rotation of robot center wrt IMU here
 
 imu:
   manager:

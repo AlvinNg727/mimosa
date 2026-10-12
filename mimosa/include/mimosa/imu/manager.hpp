@@ -60,9 +60,19 @@ struct ManagerConfig
   float interpolation_max_ts_diff = 0.01;  // s
   float extrapolation_max_ts_diff = 0.01;  // s
   float acc_scale_factor = 1.0;            // used only when IMU measurements are in units of g
-  gtsam::Pose3 T_B_I = gtsam::Pose3::Identity();  // IMU in body; rotation only, rotates acc and gyro into body
+  gtsam::Pose3 T_B_I =
+    gtsam::Pose3::Identity();  // IMU in body; rotation only, rotates acc and gyro into body
+  // Output (base_link) frame. Empty => use body_frame (backward compatible).
+  std::string output_frame = "";
+  // Pose of the output/base frame in the body/IMU frame (T_B_O). Full 6DoF.
+  gtsam::Pose3 T_B_Base = gtsam::Pose3::Identity();
 
   PreintegrationConfig preintegration;
+
+  inline std::string outputFrame() const
+  {
+    return output_frame.empty() ? body_frame : output_frame;
+  }
 };
 
 void declare_config(ManagerConfig & config);
@@ -117,6 +127,12 @@ public:
     return preintegrator_params_;
   }
   inline bool hasRecievedFirstMessage() const { return has_recieved_first_message_; }
+  // Latest bias-corrected angular velocity in the body frame, taken from the newest buffered
+  // measurement. Returns false if no measurement is available yet.
+  bool getLatestBodyAngularVelocity(V3D & omega_body);
+  // Bias-corrected angular velocity in the body frame, interpolated at timestamp ts.
+  // Returns false if ts is outside the buffered range (too old/new or gap too large).
+  bool getBodyAngularVelocityAt(double ts, V3D & omega_body);
   void callback(const sensor_msgs::Imu::ConstPtr & msg);
   bool estimateAttitude(gtsam::Rot3 & R_W_B, V3D & estimated_acc_bias, V3D & estimated_gyro_bias);
   void getInterpolatedMeasurements(

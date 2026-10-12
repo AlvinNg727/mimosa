@@ -90,7 +90,10 @@ void Manager::callback(const sensor_msgs::Imu::ConstPtr & msg)
   imu_meas.tail<3>() = R_B_I * imu_meas.tail<3>();
 
   // Add to buffer
-  ImuBuffer::const_iterator it_current, it_previous;
+  // Copy the values needed for propagation while holding the lock. The buffer is a deque,
+  // so iterators are invalidated by push_back/pop_front once the lock is released.
+  double ts_current = 0.0, ts_previous = 0.0;
+  V6D meas_current = V6D::Zero(), meas_previous = V6D::Zero();
   bool propagate = false;
   {
     std::lock_guard<std::mutex> lock(buffer_mutex_);
@@ -102,8 +105,12 @@ void Manager::callback(const sensor_msgs::Imu::ConstPtr & msg)
 
     // Propagate the imu
     if (propagation_preintegrator_ && propagation_base_state_.ts() != 0) {
-      it_current = std::prev(buffer_.end());
-      it_previous = std::prev(it_current);
+      const auto it_current = std::prev(buffer_.end());
+      const auto it_previous = std::prev(it_current);
+      ts_current = it_current->first;
+      meas_current = it_current->second;
+      ts_previous = it_previous->first;
+      meas_previous = it_previous->second;
       propagate = true;
     }
   }
@@ -114,14 +121,14 @@ void Manager::callback(const sensor_msgs::Imu::ConstPtr & msg)
   logger_->trace("Propagating IMU");
   std::lock_guard<std::mutex> lock(propagation_mutex_);
 
-  const double dt = it_current->first - propagated_upto_ts_;
+  const double dt = ts_current - propagated_upto_ts_;
 
   if (dt < 0) {
     // The current imu measurement is older than the last propagated state
     logger_->warn(
       "Current IMU measurement is older than the last propagated state. Current ts: {} "
       "Propagated ts: {}",
-      it_current->first, propagated_upto_ts_);
+      ts_current, propagated_upto_ts_);
     return;
   } else if (dt == 0) {
     // This can happen if an IMU measurement shares an exact timestamp with a sensor measurement
@@ -131,22 +138,22 @@ void Manager::callback(const sensor_msgs::Imu::ConstPtr & msg)
       "Current IMU measurement has the same timestamp as the last propagated state. Current ts: "
       "{} "
       "Propagated ts: {}",
-      it_current->first, propagated_upto_ts_);
+      ts_current, propagated_upto_ts_);
     nav_state = propagation_base_state_.navState();
   } else {  // Normal case where we need to integrate the new IMU measurement
-    if (propagated_upto_ts_ < it_previous->first) {
+    if (propagated_upto_ts_ < ts_previous) {
       // Normally we will always be doing 1 step propagation, but if we have missed some imu
       // measurements, we need to propagate up to the current imu measurement
       updatePreintegrationTo(
-        propagation_base_state_.ts(), it_previous->first, propagation_base_state_.imuBias(),
+        propagation_base_state_.ts(), ts_previous, propagation_base_state_.imuBias(),
         propagation_preintegrator_);
-      propagated_upto_ts_ = it_previous->first;
+      propagated_upto_ts_ = ts_previous;
     }
 
     // Update the preintegrator with the previous imu measurement for the dt
     propagation_preintegrator_->integrateMeasurement(
-      it_previous->second.head<3>(), it_previous->second.tail<3>(), dt);
-    propagated_upto_ts_ = it_current->first;
+      meas_previous.head<3>(), meas_previous.tail<3>(), dt);
+    propagated_upto_ts_ = ts_current;
 
     // Predict the state
     nav_state = propagation_preintegrator_->predict(
@@ -154,16 +161,96 @@ void Manager::callback(const sensor_msgs::Imu::ConstPtr & msg)
       propagation_base_state_.gravity());
   }
 
-  // Publish propagated odometry
+  // Publish propagated odometry in the output/base frame.
   nav_msgs::Odometry odometry;
   if (pub_odometry_.getNumSubscribers()) {
+    const gtsam::Pose3 T_W_O = nav_state.pose() * config_.T_B_Base;
     odometry.header.frame_id = config_.map_frame;
-    odometry.child_frame_id = config_.body_frame;
+    odometry.child_frame_id = config_.outputFrame();
     odometry.header.stamp.fromSec(ts);
-    convert(nav_state.pose(), odometry.pose.pose);
-    convert(nav_state.velocity(), odometry.twist.twist.linear);
+    convert(T_W_O, odometry.pose.pose);
+
+    // The measurement being integrated is the newest one in the buffer, and the buffered
+    // measurements are already expressed in the body frame.
+    const V3D omega_body = meas_current.tail<3>() - propagation_base_state_.imuBias().gyroscope();
+    V3D v_output, omega_output;
+    convertTwistToOutputFrame(
+      config_.T_B_Base, nav_state.bodyVelocity(), omega_body, v_output, omega_output);
+    convert(v_output, odometry.twist.twist.linear);
+    convert(omega_output, odometry.twist.twist.angular);
     pub_odometry_.publish(odometry);
   }
+}
+
+bool Manager::getLatestBodyAngularVelocity(V3D & omega_body)
+{
+  V6D meas;
+  {
+    std::lock_guard<std::mutex> lock(buffer_mutex_);
+    if (buffer_.empty()) {
+      return false;
+    }
+    meas = buffer_.back().second;
+  }
+
+  // The buffered measurement is already expressed in the body frame. Correct it with the bias
+  // of the state currently being propagated.
+  std::lock_guard<std::mutex> lock(propagation_mutex_);
+  omega_body = meas.tail<3>() - propagation_base_state_.imuBias().gyroscope();
+  return true;
+}
+
+bool Manager::getBodyAngularVelocityAt(const double ts, V3D & omega_body)
+{
+  V6D meas_interp;
+  bool have_meas = false;
+  {
+    std::lock_guard<std::mutex> lock(buffer_mutex_);
+    if (buffer_.empty()) {
+      return false;
+    }
+    if (ts < buffer_.front().first) {
+      // Requested time has already been pruned from the buffer.
+      return false;
+    }
+    auto e_itr = std::lower_bound(
+      buffer_.begin(), buffer_.end(), ts,
+      [](const ImuMeasurement & m, const double t) { return m.first < t; });
+    if (e_itr == buffer_.end()) {
+      // Requested time is newer than the newest buffered measurement. Allow a small
+      // extrapolation, otherwise the caller should wait for more IMU data.
+      const auto & back = buffer_.back();
+      if (ts - back.first > config_.extrapolation_max_ts_diff) {
+        return false;
+      }
+      meas_interp = back.second;
+      have_meas = true;
+    } else if (e_itr->first == ts) {
+      meas_interp = e_itr->second;
+      have_meas = true;
+    } else {
+      // e_itr->first > ts, interpolate with the previous measurement.
+      if (e_itr == buffer_.begin()) {
+        return false;
+      }
+      auto p_itr = std::prev(e_itr);
+      if (e_itr->first - p_itr->first > config_.interpolation_max_ts_diff) {
+        return false;
+      }
+      const double ratio = (ts - p_itr->first) / (e_itr->first - p_itr->first);
+      meas_interp = p_itr->second + (e_itr->second - p_itr->second) * ratio;
+      have_meas = true;
+    }
+  }
+
+  if (!have_meas) {
+    return false;
+  }
+
+  // The buffered measurements are already expressed in the body frame.
+  std::lock_guard<std::mutex> lock(propagation_mutex_);
+  omega_body = meas_interp.tail<3>() - propagation_base_state_.imuBias().gyroscope();
+  return true;
 }
 
 bool Manager::estimateAttitude(
@@ -414,8 +501,9 @@ void Manager::addImuFactorNoLock(
   const gtsam::Key key_0, const gtsam::Key key_1, gtsam::NonlinearFactorGraph & graph)
 {
   updatePreintegrationTo(ts_0, ts_1, bias_0, preintegrator_);
-  graph.add(gtsam::ImuFactorWithGravity(
-    X(key_0), V(key_0), X(key_1), V(key_1), B(key_0), G(0), *preintegrator_));
+  graph.add(
+    gtsam::ImuFactorWithGravity(
+      X(key_0), V(key_0), X(key_1), V(key_1), B(key_0), G(0), *preintegrator_));
 
   const auto imu_bias_random_walk =
     (V6D() << config_.preintegration.acc_bias_random_walk,
@@ -423,9 +511,11 @@ void Manager::addImuFactorNoLock(
      config_.preintegration.gyro_bias_random_walk, config_.preintegration.gyro_bias_random_walk,
      config_.preintegration.gyro_bias_random_walk)
       .finished();
-  graph.add(gtsam::BetweenFactor<gtsam::imuBias::ConstantBias>(
-    B(key_0), B(key_1), gtsam::imuBias::ConstantBias(V3D::Zero(), V3D::Zero()),
-    gtsam::noiseModel::Diagonal::Sigmas(imu_bias_random_walk * sqrt(preintegrator_->deltaTij()))));
+  graph.add(
+    gtsam::BetweenFactor<gtsam::imuBias::ConstantBias>(
+      B(key_0), B(key_1), gtsam::imuBias::ConstantBias(V3D::Zero(), V3D::Zero()),
+      gtsam::noiseModel::Diagonal::Sigmas(
+        imu_bias_random_walk * sqrt(preintegrator_->deltaTij()))));
 
   logger_->debug("Added IMU factor between keys {} and {}", gdkf(key_0), gdkf(key_1));
 }
@@ -528,6 +618,8 @@ void declare_config(ManagerConfig & config)
   field(config.logs_directory, "logs_directory", "directory_path");
   field(config.map_frame, "map_frame", "str");
   field(config.body_frame, "body_frame", "str");
+  field(config.output_frame, "output_frame", "str");
+  field(config.T_B_Base, "T_B_Base", "gtsam::Pose3");
 
   {
     NameSpace ns("imu");
@@ -551,7 +643,10 @@ void declare_config(ManagerConfig & config)
   check(config.acc_scale_factor, GE, 1.0, "acc_scale_factor");
   check(config.acc_scale_factor, LT, 10.0, "acc_scale_factor");
   checkCondition(
-    config.T_B_I.translation().norm() == 0.0, "T_B_I must be a pure rotation (body origin is the IMU)");
+    config.T_B_I.translation().norm() == 0.0,
+    "T_B_I must be a pure rotation (body origin is the IMU)");
+  validateOutputFrameParams(
+    config.output_frame, config.body_frame, config.map_frame, config.T_B_Base);
 }
 
 }  // namespace imu

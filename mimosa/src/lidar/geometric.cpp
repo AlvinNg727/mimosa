@@ -497,7 +497,9 @@ void Geometric::updateMap(const gtsam::Key key, const gtsam::Values & values)
 
     map_poses_.push_back(T_W_Be);
     geometry_msgs::Pose p;
-    convert(T_W_Be, p);
+    // Publish the keyframe pose in the output/base frame, consistent with the graph manager's
+    // path/odometry. Note: map_poses_ and the map insertion above stay in the body frame.
+    convert(T_W_Be * config.T_B_Base, p);
     keyframe_poses_.poses.push_back(p);
 
     if (pub_map_.getNumSubscribers()) {
